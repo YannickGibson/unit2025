@@ -7,6 +7,8 @@ import argparse
 import npfl138
 import torch
 import torch.nn as nn
+from PIL import Image
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 npfl138.require_version("2425.5")
 torch.set_default_device('cuda')
@@ -19,14 +21,15 @@ parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--learning_rate", default=1e-2, type=float, help="Model learning rate.")
 parser.add_argument("--learning_rate_final", default=1e-3, type=float, help="Final model learning rate.")
 parser.add_argument("--patience", default=5, type=int, help="Early stopping patience.")
-parser.add_argument("--hidden_dims", default=[64, 64, 64], type=list[int], help="Dimensions of hidden layers.")
+parser.add_argument("--hidden_dims", default=[64, 64], type=list[int], help="Dimensions of hidden layers.")
 parser.add_argument("--weight_decay", default=1e-2, type=float, help="Weight decay.")
+parser.add_argument("--evaluate", default=False, action="store_true", help="Perform just an evaluation.")
 
 
 DATA_PATH = Path("/mount/data/preprocessed_dataset")
 TRAIN_PATH = DATA_PATH / "train"
 VAL_PATH = DATA_PATH / "val"
-MODEL_PATH = Path("./model.pt")
+MODEL_PATH = Path("./model/model.pt")
 CLASSES2EVAL = [10, 30, 40] # Only evaluate on these classes
 
 class EarlyStopper:
@@ -174,7 +177,7 @@ class DummyModel(npfl138.TrainableModule):
         # Final prediction layer
         self.conv_output = nn.Conv2d(
             in_channels=args.hidden_dims[-1],
-            out_channels=1,
+            out_channels=input_channels,
             kernel_size=3,
             padding=1
         )
@@ -200,25 +203,43 @@ class SeqSimpleDataset(SeqGreenEarthNetDataset):
     def __getitem__(self, idx) -> tuple[np.ndarray, np.ndarray]:
         dict_data = super().__getitem__(idx)
         inputs = dict_data["inputs"].astype(np.float32)
+        inputs = np.nan_to_num(inputs, nan=0.0)
         targets = dict_data["targets"].astype(np.float32)
+        targets = np.nan_to_num(targets, nan=0.0)
         return (inputs, targets)
     
+
+def _compute_evi(predictions):
+    # input_channels=["red", "green", "blue", "nir"]
+    # EVI = 2.5 * ((NIR - Red) / (NIR + 6 * Red - 7.5 * Blue + 1))
+    #print(predictions.shape)
+    red = predictions[:, 0]
+    green = predictions[:, 1]
+    blue = predictions[:, 2]
+    nir = predictions[:, 3]
+
+    return 2.5 * (nir - red) / (nir + 6 * red - 7.5 * blue + 1)
+
 
 class MaskedMSELoss():
     def __init__(self, classes):
         self._classes = classes
 
     def __call__(self, pred, target):
-        evi = target[:, 0, 0]
+        target_evi = target[:, 0, 0]
         class_mask = target[:, 0, 1]
+        target_clr = target[:, :, 2:]
 
-        valid_mask = (torch.isin(class_mask, torch.tensor(self._classes))) & (~torch.isnan(evi)) & (evi >= -1) & (evi <= 1)
+        valid_mask = (torch.isin(class_mask, torch.tensor(self._classes))) & (~torch.isnan(target_evi)) & (target_evi >= -1) & (target_evi <= 1)
         valid_mask = valid_mask.unsqueeze(1)
-        evi = evi.unsqueeze(1)
-    
-        target_evi = evi[valid_mask]
-        pred_evi = pred[valid_mask]
-        return torch.nn.functional.mse_loss(pred_evi, target_evi)
+        pred = pred.unsqueeze(1)
+        valid_mask = valid_mask.unsqueeze(2).expand(-1, -1, 4, -1, -1)
+        target_clr = target_clr[valid_mask]
+        pred = pred[valid_mask]
+        assert pred.shape == target_clr.shape
+        if len(pred) == 0:
+            return torch.tensor(0.0, requires_grad=True)
+        return torch.nn.functional.mse_loss(pred, target_clr)
 
 
 
@@ -228,7 +249,8 @@ def main(args: argparse.Namespace):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.set_default_device(device)
 
-    args.logdir = os.path.join("logs", "{}-{}-{}".format(
+
+    args.logdir = os.path.join("model/logs", "{}-{}-{}".format(
         os.path.basename(globals().get("__file__", "notebook")),
         datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S"),
         ",".join(("{}={}".format(re.sub("(.)[^_]*_?", r"\1", k), v) for k, v in sorted(vars(args).items())))
@@ -237,15 +259,15 @@ def main(args: argparse.Namespace):
 
 
     info_list = list(ADDITIONAL_INFO_DICT.keys())
-    input_channels=["red", "green", "blue"]
-    target_channels=["evi", "class"]
+    input_channels=["red", "green", "blue", "nir"]
+    target_channels=["evi", "class", "red", "green", "blue", "nir"]
     ds_train = SeqSimpleDataset(
         folder=TRAIN_PATH,
         input_channels=input_channels,
         target_channels=target_channels,
         additional_info_list=info_list,
         time=True,
-        #use_mask=True,
+        use_mask=True,
     )
     ds_val = SeqSimpleDataset(
         folder=VAL_PATH,
@@ -253,7 +275,7 @@ def main(args: argparse.Namespace):
         target_channels=target_channels,
         additional_info_list=info_list,
         time=True,
-        #use_mask=True,
+        use_mask=True,
     )
 
 
@@ -272,6 +294,22 @@ def main(args: argparse.Namespace):
     )
 
     model = DummyModel(args, len(input_channels))
+
+    # TODO
+    if args.evaluate:
+        model.load_weights(MODEL_PATH)
+        predictions = model.predict(dl_val, data_with_labels=True)
+        for i, prediction in enumerate(predictions):
+            prediction = np.transpose(prediction[:3, :, :], (1, 2, 0))
+            min_val = prediction.min()
+            max_val = prediction.max()
+            prediction = (prediction - min_val) / (max_val - min_val)
+            image_np = (prediction * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image_np)
+            pil_image.save(f'model/logs/prediction_{i}.png')
+        return
+
+
 
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
@@ -297,11 +335,22 @@ def main(args: argparse.Namespace):
 
     os.makedirs(args.logdir, exist_ok=True)
 
-    #for batch in dl_train:
-    #    for key, value in batch.items():
-    #        print(f"Shape of {key}:", value.shape)
-    #    print(model(batch["inputs"].to(device).to(torch.float32)))
-    #    break
+
+    model.save_weights(MODEL_PATH)
+
+    #dl_test = dl_val
+
+    #output = model.predict(dl_val, data_with_labels=True)
+    #with open(
+    #    os.path.join(args.logdir, "predictions.txt"), "w", encoding="utf-8"
+    #) as predictions_file:
+    #    # Perform the prediction on the test data. The line below assumes you have
+    #    # a dataloader `test` where the individual examples are `(image, target)` pairs.
+    #    for prediction in model.predict(dl_test, data_with_labels=True):
+    #        print(np.argmax(prediction), file=predictions_file)
+
+
+
 
 
 if __name__ == "__main__":
