@@ -559,28 +559,7 @@ class BaseGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDataset):
 
         
         if self.use_fill_for_clouds:
-            # Get cloud mask and ensure correct boolean shape
-            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence).astype(bool)
-            cloud_mask = np.expand_dims(cloud_mask, axis=1)
-            non_cloud_mask = ~cloud_mask
-    
-            # Try to calculate mean from future frames first
-            try:
-                future_mean_values = np.nanmean(np.where(non_cloud_mask[1:], inputs[1:], np.nan), axis=0, keepdims=True)
-                
-                # If future mean is available, use it
-                if not np.all(np.isnan(future_mean_values)):
-                    inputs = np.where(cloud_mask, future_mean_values, inputs)
-                else:
-                    # Fallback to previous frames if future mean is not available
-                    previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
-                    inputs = np.where(cloud_mask, previous_mean_values, inputs)
-            
-            except IndexError:
-                # If there are not enough frames for future mean, use previous frames
-                previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
-                inputs = np.where(cloud_mask, previous_mean_values, inputs)
-
+            inputs = self.fill_clouds_with_mean(inputs, minicube)
         
         
         if self.transform is not None:
@@ -739,27 +718,8 @@ class SeqGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDatasetWithFilli
             targets = np.where(mask == 0, targets, np.nan)
 
         if self.use_fill_for_clouds:
-            # Get cloud mask and ensure correct boolean shape
-            cloud_mask = self._get_channel_for_map(minicube, "mask", self._length_sequence).astype(bool)
-            cloud_mask = np.expand_dims(cloud_mask, axis=1)
-            non_cloud_mask = ~cloud_mask
-    
-            # Try to calculate mean from future frames first
-            try:
-                future_mean_values = np.nanmean(np.where(non_cloud_mask[1:], inputs[1:], np.nan), axis=0, keepdims=True)
-                
-                # If future mean is available, use it
-                if not np.all(np.isnan(future_mean_values)):
-                    inputs = np.where(cloud_mask, future_mean_values, inputs)
-                else:
-                    # Fallback to previous frames if future mean is not available
-                    previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
-                    inputs = np.where(cloud_mask, previous_mean_values, inputs)
-            
-            except IndexError:
-                # If there are not enough frames for future mean, use previous frames
-                previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
-                inputs = np.where(cloud_mask, previous_mean_values, inputs)
+            inputs = self.fill_clouds_with_mean(inputs, minicube)
+
         
         if self.transform is not None:
             inputs = self.transform(inputs)
