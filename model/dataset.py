@@ -234,6 +234,7 @@ class BaseGreenEarthNetDataset(Dataset):
         return minicube
 
 
+
 class SeqGreenEarthNetDataset(BaseGreenEarthNetDataset):
     def __init__(self,
                  folder: Path | str,
@@ -371,6 +372,250 @@ class SeqGreenEarthNetDataset(BaseGreenEarthNetDataset):
             out['filename'] = file
 
         return out
+    
+
+
+class BaseGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDataset):
+    def __init__(self,
+                 folder: Path | str,
+                 input_channels: List[str],
+                 target_channels: List[str],
+                 additional_info_list: List[str] | None = None,
+                 time: bool = False,
+                 transform: T.Compose | None = None,
+                 target_transform: T.Compose | None = None,
+                 use_mask: bool = True,
+                 use_fill_for_clouds: bool = True,
+                 ):
+        """Base dataset for UNIT competition. This dataset returns 
+        a dictionary with the whole sequence of images and the target.
+
+        Parameters:
+        ----------
+        folder : Path | str
+            Path to the folder containing the dataset files.
+        input_channels : List
+            List of input channels to be used.
+        target_channels : List
+            List of target channels to be used.
+        additional_info_list : List | None, optional
+            List of additional information to be used. Defaults to None. 
+        time : bool, optional
+            Whether to return the time of the capture. Defaults to False.
+        transform : T.Compose | None, optional
+            Transformations to apply to the input data. Defaults to None.
+        target_transform : T.Compose | None, optional
+            Transformations to apply to the target data. Defaults to None.
+        use_mask : bool, optional
+            Whether to use a mask. If use_mask is set to True, invalid pixels are set to np.nan. Defaults to True.
+        """
+
+        self.files = list(Path(folder).rglob("*.nc"))
+        self.transform = transform
+        self.target_transform = target_transform
+        self.use_mask = use_mask
+        self.input_channels = input_channels
+        self.target_channels = target_channels
+        self.additional_info_list = additional_info_list
+        self.time = time
+        self.use_fill_for_clouds = use_fill_for_clouds
+
+        
+
+        self._length_sequence = 30
+
+        self._check_channels(input_channels, "Input")
+        self._check_channels(target_channels, "Target")
+        self._check_additional_info(
+            additional_info_list, "Additional Info") if additional_info_list else None
+
+    def _check_channels(self, channels: List, channel_type: str):
+        """Check if the channels are in the channel dictionary keys.
+
+        Parameters:
+        -----------
+        channels : List
+            List of channels to check.
+        channel_type : str
+            Type of channels being checked (e.g., "Input" or "Target").
+        """
+        for channel in channels:
+            if channel not in CHANNEL_DICT.keys():
+                raise ValueError(
+                    f"{channel_type} channel '{channel}' is not in the channel dictionary keys. "
+                    f"Use one of {', '.join(CHANNEL_DICT.keys())}.")
+
+    def _check_additional_info(self, additional_info_list: List, additional_info_type: str):
+        """Check if the additional information are in the additional info dictionary keys.
+
+        Parameters:
+        -----------
+        additional_info_list : List
+            List of additional information to check.
+        additional_info_type : str
+            Type of additional information being checked (e.g., "Additional Info").
+        """
+        for additional_info in additional_info_list:
+            if additional_info not in ADDITIONAL_INFO_DICT.keys():
+                raise ValueError(
+                    f"{additional_info_type} '{additional_info}' is not in the additional info dictionary keys. "
+                    f"Use one of {', '.join(ADDITIONAL_INFO_DICT.keys())}.")
+
+    def _get_channel(self, minicube: xr.Dataset, channel_name: str, sequence_length: int):
+        """Get the channel from the minicube DataArray."""
+        channel_array = minicube[CHANNEL_DICT[channel_name]].values
+        if channel_name in ["class", "longtitude", "latitude"] or "elevation" in channel_name:
+            channel_array = np.repeat(
+                channel_array[np.newaxis, :, :], sequence_length, axis=0)
+        return channel_array
+
+    def _get_additional_info(self, minicube: xr.Dataset, additional_info_name: str, sequence_length: int):
+        """Get the additional information from the minicube DataArray."""
+        additional_info_array = minicube[ADDITIONAL_INFO_DICT[additional_info_name]].values
+        return additional_info_array
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx) -> Dict[str, np.ndarray]:
+        """Retrieves the input and target data for a given index from the dataset.
+
+        Parameters:
+        -----------
+        idx : int
+            Index of the data to retrieve.
+
+        Returns:
+        --------
+        Dict[str, np.ndarray]: A dictionary containing:
+            - 'inputs' (np.ndarray): The input data array in shape [L, CH_i, H, W], 
+               where L is the sequence length and CH_i is the number of input channels.
+            - 'targets' (np.ndarray): The target data array in shape [L, CH_t, H, W], 
+               where L is the sequence length and CH_t is the number of target channels.
+            - 'additional_info' (np.ndarray): The additional information array in shape [L, CH_a],
+               where L is the sequence length and CH_a is the number of additional information channels. Optional.
+            - 'time' (np.ndarray): The time of the capture. Optional.
+
+        """
+
+        file = self.files[idx]
+        minicube = xr.open_dataset(file).isel(time=slice(4, None, 5))
+        minicube = self.compute_ndvi(minicube)
+        minicube = self.compute_evi(minicube)
+
+        inputs = np.stack([self._get_channel(minicube, channel, self._length_sequence)
+                          for channel in self.input_channels], axis=1)
+        targets = np.stack([self._get_channel(minicube, channel, self._length_sequence)
+                           for channel in self.target_channels], axis=1)
+
+        if self.use_mask:
+            mask = self._get_channel(minicube, "mask", self._length_sequence)
+            mask = np.expand_dims(mask, axis=1)
+            inputs = np.where(mask == 0, inputs, np.nan)
+            targets = np.where(mask == 0, targets, np.nan)
+
+        print("use_fill_for_clouds")
+        print(self.use_fill_for_clouds)
+        """
+        if self.use_fill_for_clouds:
+            print("use_fill_for_clouds")
+            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence)
+            cloud_mask = np.expand_dims(mask, axis=1) 
+            non_cloud_mask = ~cloud_mask 
+
+            
+            mean_values = np.where(non_cloud_mask, inputs, np.nan).mean(axis=0, keepdims=True)  # Compute mean only from valid pixels
+            inputs = np.where(cloud_mask, mean_values, inputs) 
+         """
+        
+        if self.use_fill_for_clouds:
+            print("use_fill_for_clouds")
+            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence).astype(bool)  # Ensure it's boolean
+            cloud_mask = np.expand_dims(cloud_mask, axis=1)  # Ensure correct shape
+            non_cloud_mask = ~cloud_mask  # Reverse mask correctly
+        
+            mean_values = np.nanmean(np.where(non_cloud_mask, inputs, np.nan), axis=0, keepdims=True)  # Compute mean only from valid pixels
+            inputs = np.where(cloud_mask, mean_values, inputs)  # Fill clouds with mean values
+            
+         #   non_cloud_mask = ~np.isnan(inputs)
+         #   mean_values = np.nanmean(inputs, axis=0, keepdims=True)
+         #   inputs = np.where(non_cloud_mask, inputs, mean_values)
+
+            
+            # for every value check if it is nan if it is nan look at other values at the same possition from inputs and if there is   value do average of them
+        #     cloud_mask = np.isnan(inputs)
+         #    mean_values = np.nanmean(inputs, axis=0, keepdims=True)
+         #    inputs = np.where(cloud_mask, mean_values, inputs)
+ 
+            print("OKOK")
+
+
+
+        
+        if self.transform is not None:
+            inputs = self.transform(inputs)
+
+        if self.target_transform is not None:
+            targets = self.target_transform(targets)
+
+        out = {
+            'inputs': inputs,
+            'targets': targets
+        }
+
+        if self.additional_info_list is not None:
+            out['additional_info'] = np.stack(
+                [self._get_additional_info(minicube, info, self._length_sequence) for info in self.additional_info_list], axis=1)
+
+        if self.time:
+            out['times'] = minicube.time.values
+
+
+        return out
+
+    def compute_ndvi(self, minicube):
+        """Compute the Normalized Difference Vegetation Index (NDVI) for the given minicube.
+
+        NDVI is calculated using the formula:
+        NDVI = (NIR - Red) / (NIR + Red + 1e-8)
+
+        Parameters:
+        -----------
+        minicube : xarray.Dataset)
+            The input dataset containing the spectral bands.
+
+        Returns:
+        --------
+        minicube: xarray.Dataset
+            The input dataset with an additional 'ndvi' variable representing the NDVI.
+        """
+        minicube["ndvi"] = (minicube.s2_B8A - minicube.s2_B04) / \
+            (minicube.s2_B8A + minicube.s2_B04 + 1e-8)
+        return minicube
+
+    def compute_evi(self, minicube):
+        """Compute the Enhanced Vegetation Index (EVI) for the given minicube.
+
+        EVI is calculated using the formula:
+        EVI = 2.5 * ((NIR - Red) / (NIR + 6 * Red - 7.5 * Blue + 1))
+
+        Parameters:
+        -----------
+        minicube : xarray.Dataset)
+            The input dataset containing the spectral bands.
+
+        Returns:
+        --------
+        minicube: xarray.Dataset
+            The input dataset with an additional 'evi' variable representing the EVI.
+        """
+        minicube["evi"] = 2.5 * ((minicube.s2_B8A - minicube.s2_B04) /
+                                 (minicube.s2_B8A + 6 * minicube.s2_B04 - 7.5 * minicube.s2_B02 + 1))
+        return minicube
+
+
+
+
 
 
 def custom_collate_fn(batch, default_key=None):

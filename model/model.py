@@ -15,7 +15,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", default=4, type=int, help="Batch size.")
 parser.add_argument("--threads", default=1, type=int, help="Maximum number of threads to use.")
 parser.add_argument("--seed", default=42, type=int, help="Random seed.")
-parser.add_argument("--epochs", default=10, type=int, help="Number of epochs.")
+parser.add_argument("--epochs", default=1, type=int, help="Number of epochs.")
 parser.add_argument("--learning_rate", default=1e-2, type=float, help="Model learning rate.")
 parser.add_argument("--learning_rate_final", default=1e-3, type=float, help="Final model learning rate.")
 parser.add_argument("--patience", default=5, type=int, help="Early stopping patience.")
@@ -27,7 +27,7 @@ DATA_PATH = Path("/mount/data/preprocessed_dataset")
 TRAIN_PATH = DATA_PATH / "train"
 VAL_PATH = DATA_PATH / "val"
 MODEL_PATH = Path("./model.pt")
-
+CLASSES2EVAL = [10, 30, 40] # Only evaluate on these classes
 
 class EarlyStopper:
     def __init__(self, patience: int, best_model_filename: str | None) -> None:
@@ -201,9 +201,25 @@ class SeqSimpleDataset(SeqGreenEarthNetDataset):
         dict_data = super().__getitem__(idx)
         inputs = dict_data["inputs"].astype(np.float32)
         targets = dict_data["targets"].astype(np.float32)
-        print(inputs.shape)
-        print(targets.shape)
         return (inputs, targets)
+    
+
+class MaskedMSELoss():
+    def __init__(self, classes):
+        self._classes = classes
+
+    def __call__(self, pred, target):
+        evi = target[:, 0, 0]
+        class_mask = target[:, 0, 1]
+
+        valid_mask = (torch.isin(class_mask, torch.tensor(self._classes))) & (~torch.isnan(evi)) & (evi >= -1) & (evi <= 1)
+        valid_mask = valid_mask.unsqueeze(1)
+        evi = evi.unsqueeze(1)
+    
+        target_evi = evi[valid_mask]
+        pred_evi = pred[valid_mask]
+        return torch.nn.functional.mse_loss(pred_evi, target_evi)
+
 
 
 def main(args: argparse.Namespace):
@@ -222,8 +238,7 @@ def main(args: argparse.Namespace):
 
     info_list = list(ADDITIONAL_INFO_DICT.keys())
     input_channels=["red", "green", "blue"]
-    target_channels=["ndvi", "class"]
-    print(len(input_channels))
+    target_channels=["evi", "class"]
     ds_train = SeqSimpleDataset(
         folder=TRAIN_PATH,
         input_channels=input_channels,
@@ -267,7 +282,7 @@ def main(args: argparse.Namespace):
     model.configure(
         optimizer=optimizer,
         scheduler=scheduler,
-        loss=torch.nn.MSELoss(),
+        loss=MaskedMSELoss(CLASSES2EVAL),
         logdir=args.logdir,
     )
 
