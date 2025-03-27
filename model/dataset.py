@@ -375,6 +375,8 @@ class SeqGreenEarthNetDataset(BaseGreenEarthNetDataset):
     
 
 
+ 
+
 class BaseGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDataset):
     def __init__(self,
                  folder: Path | str,
@@ -476,7 +478,47 @@ class BaseGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDataset):
 
     def __len__(self):
         return len(self.files)
+ 
+    
+    def fill_clouds_with_mean(self, inputs, minicube):
+        """
+        Fill cloud-masked pixels with mean values.
+        Prioritizes mean from future frames, falls back to previous frames.
+        
+        Parameters:
+        - inputs: Input array to be processed
+        - minicube: Source of cloud mask
+        - self: Instance with method to get channel
+        
+        Returns:
+        - Processed inputs with cloud pixels filled
+        """
+        if self.use_fill_for_clouds:
 
+            # Get cloud mask and ensure correct boolean shape
+            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence).astype(bool)
+            cloud_mask = np.expand_dims(cloud_mask, axis=1)
+            non_cloud_mask = ~cloud_mask
+    
+            # Try to calculate mean from future frames first
+            try:
+                future_mean_values = np.nanmean(np.where(non_cloud_mask[1:], inputs[1:], np.nan), axis=0, keepdims=True)
+                
+                # If future mean is available, use it
+                if not np.all(np.isnan(future_mean_values)):
+                    inputs = np.where(cloud_mask, future_mean_values, inputs)
+                else:
+                    # Fallback to previous frames if future mean is not available
+                    previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
+                    inputs = np.where(cloud_mask, previous_mean_values, inputs)
+            
+            except IndexError:
+                # If there are not enough frames for future mean, use previous frames
+                previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
+                inputs = np.where(cloud_mask, previous_mean_values, inputs)
+
+        return inputs
+    
     def __getitem__(self, idx) -> Dict[str, np.ndarray]:
         """Retrieves the input and target data for a given index from the dataset.
 
@@ -514,47 +556,51 @@ class BaseGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDataset):
             inputs = np.where(mask == 0, inputs, np.nan)
             targets = np.where(mask == 0, targets, np.nan)
 
-        print("use_fill_for_clouds")
-        print(self.use_fill_for_clouds)
-        """
-        if self.use_fill_for_clouds:
-            print("use_fill_for_clouds")
-            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence)
-            cloud_mask = np.expand_dims(mask, axis=1) 
-            non_cloud_mask = ~cloud_mask 
 
-            
-            mean_values = np.where(non_cloud_mask, inputs, np.nan).mean(axis=0, keepdims=True)  # Compute mean only from valid pixels
-            inputs = np.where(cloud_mask, mean_values, inputs) 
-         """
         
         if self.use_fill_for_clouds:
-            print("use_fill_for_clouds")
-            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence).astype(bool)  # Ensure it's boolean
-            cloud_mask = np.expand_dims(cloud_mask, axis=1)  # Ensure correct shape
-            non_cloud_mask = ~cloud_mask  # Reverse mask correctly
+            # Get cloud mask and ensure correct boolean shape
+            cloud_mask = self._get_channel(minicube, "mask", self._length_sequence).astype(bool)
+            cloud_mask = np.expand_dims(cloud_mask, axis=1)
+            non_cloud_mask = ~cloud_mask
+    
+            # Try to calculate mean from future frames first
+            try:
+                future_mean_values = np.nanmean(np.where(non_cloud_mask[1:], inputs[1:], np.nan), axis=0, keepdims=True)
+                
+                # If future mean is available, use it
+                if not np.all(np.isnan(future_mean_values)):
+                    inputs = np.where(cloud_mask, future_mean_values, inputs)
+                else:
+                    # Fallback to previous frames if future mean is not available
+                    previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
+                    inputs = np.where(cloud_mask, previous_mean_values, inputs)
+            
+            except IndexError:
+                # If there are not enough frames for future mean, use previous frames
+                previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
+                inputs = np.where(cloud_mask, previous_mean_values, inputs)
+
         
-            mean_values = np.nanmean(np.where(non_cloud_mask, inputs, np.nan), axis=0, keepdims=True)  # Compute mean only from valid pixels
-            inputs = np.where(cloud_mask, mean_values, inputs)  # Fill clouds with mean values
-            
-         #   non_cloud_mask = ~np.isnan(inputs)
-         #   mean_values = np.nanmean(inputs, axis=0, keepdims=True)
-         #   inputs = np.where(non_cloud_mask, inputs, mean_values)
-
-            
-            # for every value check if it is nan if it is nan look at other values at the same possition from inputs and if there is   value do average of them
-        #     cloud_mask = np.isnan(inputs)
-         #    mean_values = np.nanmean(inputs, axis=0, keepdims=True)
-         #    inputs = np.where(cloud_mask, mean_values, inputs)
- 
-            print("OKOK")
-
-
-
         
         if self.transform is not None:
+            print( inputs)
+            print("self.transform ")
             inputs = self.transform(inputs)
+        
+            if isinstance(inputs, torch.Tensor):
+                print("isinstance.transform ")
+                
+                inputs = inputs.numpy()  # Convert back to NumPy if needed for visualization
+        
+            print("Transformed input shape:", inputs.shape)  # Debugging step
 
+            print( inputs)
+        """
+        if self.transform is not None:
+            print("self.transform ")
+            inputs = self.transform(inputs)
+"""
         if self.target_transform is not None:
             targets = self.target_transform(targets)
 
@@ -572,6 +618,182 @@ class BaseGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDataset):
 
 
         return out
+        
+ 
+class SeqGreenEarthNetDatasetWithFillingOption(BaseGreenEarthNetDatasetWithFillingOption):
+    def __init__(self,
+                 folder: Path | str,
+                 input_channels: List[str],
+                 target_channels: List[str],
+                 additional_info_list: List[str] | None = None,
+                 time: bool = False,
+                 transform: T.Compose | None = None,
+                 target_transform: T.Compose | None = None,
+                 use_mask: bool = True,
+                 use_fill_for_clouds: bool = True,
+                 return_filename: bool = False):
+        """Base dataset for UNIT competition. This dataset returns 
+        a dictionary with the whole sequence of images and the target.
+
+        Parameters:
+        ----------
+        folder : Path | str
+            Path to the folder containing the dataset files.
+        input_channels : List
+            List of input channels to be used.
+        target_channels : List
+            List of target channels to be used.
+        additional_info_list : List | None, optional
+            List of additional information to be used. Defaults to None. 
+        time : bool, optional
+            Whether to return the time of the capture. Defaults to False.
+        transform : T.Compose | None, optional
+            Transformations to apply to the input data. Defaults to None.
+        target_transform : T.Compose | None, optional
+            Transformations to apply to the target data. Defaults to None.
+        use_mask : bool, optional
+            Whether to use a mask. If use_mask is set to True, invalid pixels are set to np.nan. Defaults to True.
+        return_filename : bool, optional
+            Whether to return the filename. Defaults to False.
+        """
+
+        self.files = list(Path(folder).glob("*.npz"))
+        self.transform = transform
+        self.target_transform = target_transform
+        self.use_mask = use_mask
+        self.input_channels = input_channels
+        self.target_channels = target_channels
+        self.additional_info_list = additional_info_list
+        self.time = time
+        self.return_filename = return_filename
+        self.use_fill_for_clouds = use_fill_for_clouds
+        
+        self._length_sequence = 30
+        self._check_channels(input_channels, "Input")
+        self._check_channels(target_channels, "Target")
+        self._check_additional_info(
+            additional_info_list, "Additional Info") if additional_info_list else None
+
+    def _get_channel(self, data: dict, channel_name: str):
+        """Get the channel from the dict."""
+        channel_array = data[channel_name]
+        return channel_array
+
+    def _get_channel_for_map(self, minicube: xr.Dataset, channel_name: str, sequence_length: int):
+        """Get the channel from the minicube DataArray."""
+        channel_array = minicube[CHANNEL_DICT[channel_name]].values
+        if channel_name in ["class", "longtitude", "latitude"] or "elevation" in channel_name:
+            channel_array = np.repeat(
+                channel_array[np.newaxis, :, :], sequence_length, axis=0)
+        return channel_array
+    
+    def _get_additional_info(self, data: dict, additional_info_name: str):
+        """Get the additional information from the minicube DataArray."""
+        additional_info_array = data[additional_info_name]
+        return additional_info_array
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx) -> Dict[str, np.ndarray]:
+        """For given index it retrives 5 consecutive images with time gap of 5 days between them 
+        and the target image have a time gap of 25 days from the last image in the input sequence.
+
+        Parameters:
+        -----------
+        idx : int
+            Index of the data to retrieve.
+
+        Returns:
+        --------
+        Dict[str, np.ndarray]: A dictionary containing:
+            - 'inputs' (np.ndarray): The input data array in shape [L, CH_i, H, W], 
+               where L is the sequence length and CH_i is the number of input channels.
+            - 'targets' (np.ndarray): The target data array in shape [L, CH_t, H, W], 
+               where L is the sequence length and CH_t is the number of target channels.
+            - 'additional_info' (np.ndarray): The additional information array in shape [L, CH_a],
+               where L is the sequence length and CH_a is the number of additional information channels. Optional.
+            - 'time' (np.ndarray): The time of the capture. Optional.
+
+        """
+
+        file = self.files[idx]
+        data = np.load(file, allow_pickle=True)
+
+        data_input_channels = data["inputs"].item()
+        data_target_channels = data["targets"].item()
+
+        inputs = np.stack([self._get_channel(data_input_channels, channel)
+                          for channel in self.input_channels], axis=1)
+
+        targets = np.stack([self._get_channel(data_target_channels, channel)
+                           for channel in self.target_channels], axis=1)
+
+        if self.use_mask:
+            mask = self._get_channel(data_input_channels, "mask")
+            mask = np.expand_dims(mask, axis=1)
+            inputs = np.where(mask == 0, inputs, np.nan)
+
+            mask = self._get_channel(data_target_channels, "mask")
+            mask = np.expand_dims(mask, axis=1)
+            targets = np.where(mask == 0, targets, np.nan)
+
+        if self.use_fill_for_clouds:
+            # Get cloud mask and ensure correct boolean shape
+            cloud_mask = self._get_channel_for_map(minicube, "mask", self._length_sequence).astype(bool)
+            cloud_mask = np.expand_dims(cloud_mask, axis=1)
+            non_cloud_mask = ~cloud_mask
+    
+            # Try to calculate mean from future frames first
+            try:
+                future_mean_values = np.nanmean(np.where(non_cloud_mask[1:], inputs[1:], np.nan), axis=0, keepdims=True)
+                
+                # If future mean is available, use it
+                if not np.all(np.isnan(future_mean_values)):
+                    inputs = np.where(cloud_mask, future_mean_values, inputs)
+                else:
+                    # Fallback to previous frames if future mean is not available
+                    previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
+                    inputs = np.where(cloud_mask, previous_mean_values, inputs)
+            
+            except IndexError:
+                # If there are not enough frames for future mean, use previous frames
+                previous_mean_values = np.nanmean(np.where(non_cloud_mask[:-1], inputs[:-1], np.nan), axis=0, keepdims=True)
+                inputs = np.where(cloud_mask, previous_mean_values, inputs)
+        
+        if self.transform is not None:
+            inputs = self.transform(inputs)
+
+        if self.target_transform is not None:
+            targets = self.target_transform(targets)
+
+        out = {
+            'inputs': inputs,
+            'targets': targets,
+        }
+
+        if self.additional_info_list is not None:
+
+            data_input_additional_info = data["input_additional_info"].item()
+            data_target_additional_info = data["target_additional_info"].item()
+
+            out['input_additional_info'] = np.stack(
+                [self._get_additional_info(data_input_additional_info, info) for info in self.additional_info_list], axis=1)
+
+            out['target_additional_info'] = np.stack(
+                [self._get_additional_info(data_target_additional_info, info) for info in self.additional_info_list], axis=1)
+
+        if self.time:
+            out['input_times'] = data["input_times"]
+            out['target_times'] = data["target_times"]
+
+        if self.return_filename:
+            out['filename'] = file
+
+        return out
+    
+
+ 
 
     def compute_ndvi(self, minicube):
         """Compute the Normalized Difference Vegetation Index (NDVI) for the given minicube.
