@@ -34,15 +34,22 @@ info_list = list(ADDITIONAL_INFO_DICT.keys())
 
 # Load dataloader
 ds_train = SeqGreenEarthNetDataset(
-    folder="example_preprocessed_dataset/",
+    folder="val/",
     input_channels=["red", "green", "blue"],
-    target_channels=["ndvi", "class"],
+    target_channels=["evi", "class"],
     additional_info_list=info_list,
     time=True,
     use_mask=True,
 )
 
-batch = ds_train[0]
+# Add a slider ranging from 0 to 10 in the input section
+st.markdown("### Parameter Control")
+slider_value = st.slider("Select a sample", min_value=0, max_value=min(10, len(ds_train)-1), value=2, step=1)
+st.write(f"Displaying sample index: {slider_value}")
+
+# Get the batch based on slider value
+batch = ds_train[slider_value]
+gt_img = ds_train[slider_value]["targets"]
 
 
 # Create placeholder images for inputs with different colors
@@ -50,14 +57,9 @@ input_colors = ["#FFE4E1", "#E6E6FA", "#F0FFF0", "#FFF0F5", "#F5F5DC"]  # Pastel
 # Add placeholder images to the top row
 for i, col in enumerate(top_cols):
     with col:
-        img = create_placeholder_image(150, 150, f"Input {i+1}", input_colors[i])
-        img = batch["inputs"][i]
-        st.image(img, use_container_width=True, caption=f"Input {i+1}")
 
-# Add a slider ranging from 0 to 10 in the input section
-st.markdown("### Parameter Control")
-slider_value = st.slider("Select a value", min_value=0, max_value=10, value=5, step=1)
-st.write(f"Current slider value: {slider_value}")
+        img = batch["inputs"][i].transpose(1, 2, 0)
+        st.image(img, use_container_width=True, caption=f"Input {i+1}")
 
 # Create a row for the two large images below
 st.markdown("### Results")
@@ -70,6 +72,13 @@ with bottom_cols[0]:
 
 # Add placeholder for ground truth (right)
 with bottom_cols[1]:
-    gt_img = create_placeholder_image(400, 400, "Ground Truth", "lightgreen")
-    st.image(gt_img, use_container_width=True, caption="Ground Truth")
+    
+    gt_img = batch["targets"][0][0]  # Select one channel if needed  
+    # gt_img is currently of shape is 2, 128, 128. i am interested in the first channel
+    gt_img = (gt_img - gt_img.min()) / (gt_img.max() - gt_img.min())  # Normalize  
+
+    # Convert to uint8 (optional)  
+    gt_img = (gt_img * 255).astype(np.uint8)  
+    # Display in Streamlit  
+    st.image(gt_img, use_container_width=True, caption="Ground Truth")  
 
