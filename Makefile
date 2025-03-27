@@ -1,2 +1,2 @@
 vis: 
-	cd visualization && python -m streamlit run main.py --server.headless true | cat
+	cd visualization && python -m streamlit run vis.py --server.headless true | cat
