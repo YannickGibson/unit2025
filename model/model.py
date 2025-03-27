@@ -29,6 +29,8 @@ parser.add_argument("--evaluate", default=False, action="store_true", help="Perf
 DATA_PATH = Path("/mount/data/preprocessed_dataset")
 TRAIN_PATH = DATA_PATH / "train"
 VAL_PATH = DATA_PATH / "val"
+TEST_PATH = DATA_PATH / "test"
+RESULTS_PATH = Path("/mount/data/results")
 MODEL_PATH = Path("./model/model.pt")
 CLASSES2EVAL = [10, 30, 40] # Only evaluate on these classes
 
@@ -277,6 +279,15 @@ def main(args: argparse.Namespace):
         time=True,
         use_mask=True,
     )
+    ds_test = SeqGreenEarthNetDataset(
+        folder=TEST_PATH,
+        input_channels=input_channels,
+        target_channels=target_channels,
+        additional_info_list=info_list,
+        time=True,
+        use_mask=True,
+        return_filename=True,
+    )
 
 
     dl_train = DataLoader(ds_train,
@@ -298,15 +309,19 @@ def main(args: argparse.Namespace):
     # TODO
     if args.evaluate:
         model.load_weights(MODEL_PATH)
-        predictions = model.predict(dl_val, data_with_labels=True)
-        for i, prediction in enumerate(predictions):
-            prediction = np.transpose(prediction[:3, :, :], (1, 2, 0))
-            min_val = prediction.min()
-            max_val = prediction.max()
-            prediction = (prediction - min_val) / (max_val - min_val)
-            image_np = (prediction * 255).astype(np.uint8)
-            pil_image = Image.fromarray(image_np)
-            pil_image.save(f'model/logs/prediction_{i}.png')
+        for batch in ds_test:
+            fname = Path(batch["filename"]).name
+            print(f"Prediction of file: {RESULTS_PATH / fname}")
+            inputs = batch["inputs"].astype(np.float32)
+            inputs = np.nan_to_num(inputs, nan=0.0)
+            inputs = np.expand_dims(inputs, axis=0)
+            inputs = torch.tensor(inputs)
+            pred = model(inputs)
+            evi = _compute_evi(pred).detach().cpu().numpy()
+            assert evi.shape == (1, 128, 128)
+            assert np.min(evi) >= -1
+            assert np.max(evi) <= 1
+            np.savez_compressed(RESULTS_PATH / fname, pred=evi)
         return
 
 
@@ -337,17 +352,6 @@ def main(args: argparse.Namespace):
 
 
     model.save_weights(MODEL_PATH)
-
-    #dl_test = dl_val
-
-    #output = model.predict(dl_val, data_with_labels=True)
-    #with open(
-    #    os.path.join(args.logdir, "predictions.txt"), "w", encoding="utf-8"
-    #) as predictions_file:
-    #    # Perform the prediction on the test data. The line below assumes you have
-    #    # a dataloader `test` where the individual examples are `(image, target)` pairs.
-    #    for prediction in model.predict(dl_test, data_with_labels=True):
-    #        print(np.argmax(prediction), file=predictions_file)
 
 
 
