@@ -7,8 +7,9 @@ import argparse
 import npfl138
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 npfl138.require_version("2425.5")
+torch.set_default_device('cuda')
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--batch_size", default=4, type=int, help="Batch size.")
@@ -173,7 +174,7 @@ class DummyModel(npfl138.TrainableModule):
         # Final prediction layer
         self.conv_output = nn.Conv2d(
             in_channels=args.hidden_dims[-1],
-            out_channels=input_channels,
+            out_channels=1,
             kernel_size=3,
             padding=1
         )
@@ -191,10 +192,25 @@ class DummyModel(npfl138.TrainableModule):
         prediction = self.conv_output(last_layer_output)
         
         return prediction
+    
+class SeqSimpleDataset(SeqGreenEarthNetDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    
+    def __getitem__(self, idx) -> tuple[np.ndarray, np.ndarray]:
+        dict_data = super().__getitem__(idx)
+        inputs = dict_data["inputs"].astype(np.float32)
+        targets = dict_data["targets"].astype(np.float32)
+        print(inputs.shape)
+        print(targets.shape)
+        return (inputs, targets)
+
 
 def main(args: argparse.Namespace):
     npfl138.startup(args.seed, args.threads)
     npfl138.global_keras_initializers()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    torch.set_default_device(device)
 
     args.logdir = os.path.join("logs", "{}-{}-{}".format(
         os.path.basename(globals().get("__file__", "notebook")),
@@ -207,28 +223,38 @@ def main(args: argparse.Namespace):
     info_list = list(ADDITIONAL_INFO_DICT.keys())
     input_channels=["red", "green", "blue"]
     target_channels=["ndvi", "class"]
-    ds_train = SeqGreenEarthNetDataset(
+    print(len(input_channels))
+    ds_train = SeqSimpleDataset(
         folder=TRAIN_PATH,
         input_channels=input_channels,
         target_channels=target_channels,
         additional_info_list=info_list,
         time=True,
-        use_mask=True,
-        return_filename=True,
+        #use_mask=True,
     )
-    ds_val = SeqGreenEarthNetDataset(
+    ds_val = SeqSimpleDataset(
         folder=VAL_PATH,
         input_channels=input_channels,
         target_channels=target_channels,
         additional_info_list=info_list,
         time=True,
-        use_mask=True,
-        return_filename=True,
+        #use_mask=True,
     )
 
 
-    dl_train = DataLoader(ds_train, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn)
-    dl_val = DataLoader(ds_val, batch_size=args.batch_size, shuffle=True, collate_fn=custom_collate_fn)
+    dl_train = DataLoader(ds_train,
+        batch_size=args.batch_size,
+        shuffle=True,
+        #collate_fn=custom_collate_fn,
+        generator=torch.Generator(device=device),
+    )
+    dl_val = DataLoader(
+        ds_val,
+        batch_size=args.batch_size,
+        shuffle=True,
+        #collate_fn=custom_collate_fn,
+        generator=torch.Generator(device=device),
+    )
 
     model = DummyModel(args, len(input_channels))
 
@@ -245,19 +271,22 @@ def main(args: argparse.Namespace):
         logdir=args.logdir,
     )
 
-    #model.fit(
-    #    dl_train,
-    #    dev=dl_val,
-    #    epochs=args.epochs,
-    #    log_graph=True,
-    #    callbacks=[EarlyStopper(args.patience, MODEL_PATH)],
-    #)
+    model.fit(
+        dl_train,
+        dev=dl_val,
+        epochs=args.epochs,
+        log_graph=True,
+        callbacks=[EarlyStopper(args.patience, MODEL_PATH)],
+    )
 
 
     os.makedirs(args.logdir, exist_ok=True)
 
-    test_img = ds_train[0]["inputs"]
-    model(test_img)
+    #for batch in dl_train:
+    #    for key, value in batch.items():
+    #        print(f"Shape of {key}:", value.shape)
+    #    print(model(batch["inputs"].to(device).to(torch.float32)))
+    #    break
 
 
 if __name__ == "__main__":
