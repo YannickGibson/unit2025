@@ -75,7 +75,6 @@ for i in range(to_filter):
 
         if nan_count < 0.3 and target_nan_count < .5:
             filtered.append(i)
-            st.write(batch["filename"])
     except:
         pass
 
