@@ -46,12 +46,13 @@ info_list = list(ADDITIONAL_INFO_DICT.keys())
 
 # Load dataloader
 ds_train = SeqGreenEarthNetDataset(
-    folder="val/",
+    folder="example_data/",
     input_channels=["red", "green", "blue"],
     target_channels=["evi", "class"],
     additional_info_list=info_list,
     time=True,
     use_mask=True,
+    return_filename=True
 )
 
 
@@ -74,6 +75,7 @@ for i in range(to_filter):
 
         if nan_count < 0.3 and target_nan_count < .5:
             filtered.append(i)
+            st.write(batch["filename"])
     except:
         pass
 
@@ -96,7 +98,7 @@ model_type = st.selectbox(
 if model_type == "ConvLSTM Model":
     # Load dataloader
     ds_train = SeqGreenEarthNetDataset(
-        folder="val/",
+        folder="example_data/",
         input_channels=["red", "green", "blue", "nir"],
         target_channels=["evi", "class", "red", "green", "blue", "nir"],
         additional_info_list=info_list,
@@ -143,7 +145,7 @@ for i, col in enumerate(top_cols):
         st.image(img, use_container_width=True, caption=f"Input {i+1}")
 
 # Create a row for the two large images below
-st.markdown("### Results")
+st.markdown("### Predicted vs Ground Truth EVI")
 bottom_cols = st.columns(2)
 
 from simple_model import SimpleConvModel, LastImgModel
@@ -256,6 +258,7 @@ def calculate_rmse(targets, pred):
 
     class RMSEimagewise():
         def __init__(self, name):
+            
             self.name = name
             self.rmse = defaultdict(lambda: np.array([]))  
             

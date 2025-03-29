@@ -4,3 +4,4 @@
 *.png
 *logs.txt
 *events.out*
+!assets/*

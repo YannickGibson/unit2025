@@ -1,0 +1,9 @@
+matplotlib
+streamlit
+numpy
+pillow
+torch
+torchvision
+xarray
+npfl138
+scikit-learn
