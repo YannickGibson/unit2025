@@ -6,6 +6,7 @@ import io
 import os
 import torch
 from dataset import BaseGreenEarthNetDataset, SeqGreenEarthNetDataset, custom_collate_fn, ADDITIONAL_INFO_DICT, CHANNEL_DICT
+from model import _compute_evi
 
 # Set page configuration
 st.set_page_config(layout="wide", page_title="Model Visualization")
@@ -88,9 +89,21 @@ st.write(f"Displaying sample index: {slider_value}")
 # Add model selection dropdown
 model_type = st.selectbox(
     "Select Model Type",
-    ["Last Image Model", "Simple Model", "Test Model"],
-    index=1
+    ["Last Image Model", "Simple Model", "ConvLSTM Model", "Test Model"],
+    index=2
 )
+
+if model_type == "ConvLSTM Model":
+    # Load dataloader
+    ds_train = SeqGreenEarthNetDataset(
+        folder="val/",
+        input_channels=["red", "green", "blue", "nir"],
+        target_channels=["evi", "class", "red", "green", "blue", "nir"],
+        additional_info_list=info_list,
+        time=True,
+        use_mask=True,
+    )
+
 
 # Get the batch based on slider value
 batch = ds_train[filtered[slider_value]]
@@ -119,16 +132,14 @@ def preprocess(img):
     return img
 
 
-# Create placeholder images for inputs with different colors
-# Add placeholder images to the top row
+# INPUT
 for i, col in enumerate(top_cols):
     with col:
-        img = batch["inputs"][i]
+        img = batch["inputs"][i][:3]
         # replace all nan values with 255
         img = preprocess(img)
 
         # count number of zeros and print
-        #st.write(img.shape, img.dtype, np.min(img), np.max(img))
         st.image(img, use_container_width=True, caption=f"Input {i+1}")
 
 # Create a row for the two large images below
@@ -136,6 +147,7 @@ st.markdown("### Results")
 bottom_cols = st.columns(2)
 
 from simple_model import SimpleConvModel, LastImgModel
+from model import DummyModel
 
 # Initialize the model based on dropdown selection
 if model_type == "Last Image Model":
@@ -148,6 +160,12 @@ elif model_type == "Test Model":
     model = SimpleConvModel()
     # Load the model state dict
     model.load_state_dict(torch.load("test_checkpoint.pth")["model_state_dict"])
+elif model_type == "ConvLSTM Model":
+    input_channels = ["red", "green", "blue", "nir"]
+    import datetime
+    model = DummyModel(len(input_channels))
+    MODEL_PATH = "model.pt"
+    model.load_weights(MODEL_PATH)
 
 
 
@@ -155,7 +173,7 @@ elif model_type == "Test Model":
 # PREDICTION
 with bottom_cols[0]:
     
-    inp = batch["inputs"]
+    inp = batch["inputs"].copy()
     # replace nan with X
     inp = np.nan_to_num(inp, nan=0.5)
 
@@ -163,12 +181,23 @@ with bottom_cols[0]:
     # Convert double to float
     inp = inp.float()
     
-    assert inp.shape == (5, 3, 128, 128)
-    print(inp.shape, inp.dtype)
-    pred_img = model(inp)
+    # assert inp.shape == (5, 3, 128, 128)
+
+    if model_type == "ConvLSTM Model":
+        inp = inp.unsqueeze(0)
+        # inp to device
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        inp = inp.to(device)
     
+
+    pred_img = model(inp)
+
+    if model_type == "ConvLSTM Model":
+        pred_img = _compute_evi(pred_img)
+    
+
     # Convert from tensor to numpy for visualization
-    pred_img = pred_img.detach().numpy()
+    pred_img = pred_img.cpu().detach().numpy()
 
     assert pred_img.shape == (1, 128, 128)
 
@@ -179,6 +208,8 @@ with bottom_cols[0]:
 
     # normalize to new min and max
     new_min = -1
+    if model_type == "ConvLSTM Model":
+        new_min = -0
     new_max = 1
 
     # normalize to 0-1
@@ -193,11 +224,12 @@ with bottom_cols[0]:
     # pred_img += np.random.normal(0.7, 0.2, pred_img.shape)
     pred_img = pred_img.clip(-1, 1)
 
-    # invert the image
-    pred_img *= -1
+    if model_type != "ConvLSTM Model":
+        # invert the image
+        pred_img *= -1
 
     fig, ax = plt.subplots()
-    cax = ax.imshow(pred_img  , cmap='viridis')  # You can change the colormap
+    cax = ax.imshow(pred_img  , cmap='viridis', vmin=-1, vmax=1)  # You can change the colormap
     fig.colorbar(cax)
 
     # Display the plot in Streamlit
@@ -206,7 +238,7 @@ with bottom_cols[0]:
 # Add placeholder for ground truth (right)
 with bottom_cols[1]:
     
-    gt_img = batch["targets"][0][0]  # Select one channel if needed  
+    gt_img = batch["targets"][0][0].copy()  # Select one channel if needed  
     gt_img = gt_img.clip(-1, 1)
 
     fig, ax = plt.subplots()
@@ -295,6 +327,6 @@ def calculate_rmse(targets, pred):
 unsqueezed_pred = np.expand_dims(pred_img, axis=0)
 RMSE = calculate_rmse(targets=batch["targets"][0], pred=unsqueezed_pred)
 
-st.write(f"RMSE 10 : {RMSE[10]:.5f} (zalesněná oblast)")
-st.write(f"RMSE 30 : {RMSE[30]:.5f} (louky a pastviny)")
-st.write(f"RMSE 40 : {RMSE[40]:.5f} (pole)")
+st.markdown(f"### RMSE 10 : {RMSE[10]:.5f} (zalesněná oblast)")
+st.markdown(f"### RMSE 30 : {RMSE[30]:.5f} (louky a pastviny)")
+st.markdown(f"### RMSE 40 : {RMSE[40]:.5f} (pole)")
